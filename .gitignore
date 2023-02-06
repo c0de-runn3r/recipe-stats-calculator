@@ -2,3 +2,4 @@
 /.test.tar.gz.icloud
 /hf_test_calculation_fixtures.json
 /out.json
+.env

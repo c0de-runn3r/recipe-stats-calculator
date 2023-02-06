@@ -1,16 +1,19 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
+
+	"github.com/joho/godotenv"
 )
 
 // For reading from file
@@ -42,49 +45,113 @@ type JSONoutput struct {
 	MatchByName []string `json:"match_by_name"`
 }
 
-const (
-	fromENV     = "10AM"
-	toENV       = "3PM"
-	postcodeENV = "10120"
-)
+type UserInput struct {
+	TimeFrom    string
+	TimeTo      string
+	Postcode    string
+	WordsToFind []string
+}
 
-var wordsToFind = []string{"Potato", "Veggie", "Mushroom"}
+func processENV() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
+}
+
+// to get data processing settings from user
+func getSettings() UserInput {
+	var input UserInput
+
+	reader := bufio.NewReader(os.Stdin)
+
+	for {
+		fmt.Print("Enter the postcode to look for (example: 10120): ")
+		postcode, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Println("An error occured while reading input. Please try again", err)
+			continue
+		}
+		postcode = strings.TrimSuffix(postcode, "\n")
+		ok, _ := regexp.Match("[0-9]{5}", []byte(postcode))
+		if !ok {
+			fmt.Println("Wrong postcode format. Please try again")
+			continue
+		}
+		input.Postcode = postcode
+		break
+	}
+	for {
+		fmt.Print("Enter the time frame in format 'xxAM xxPM (example: 10AM 3PM): ")
+		timeFrame, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Println("An error occured while reading input. Please try again", err)
+			continue
+		}
+		timeFrame = strings.TrimSuffix(timeFrame, "\n")
+		ok, _ := regexp.Match("(.?[0-9])AM (.?[0-9])PM", []byte(timeFrame))
+		if !ok {
+			fmt.Println("Wrong postcode format. Please try again")
+			continue
+		}
+
+		times := strings.Split(timeFrame, " ")
+
+		input.TimeFrom = times[0]
+		input.TimeTo = times[1]
+		break
+	}
+	for {
+		fmt.Print("Enter the words to look for separated by coma and whitespace (example: Potato, Veggie, Mushroom): ")
+		wordList, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Println("An error occured while reading input. Please try again", err)
+			continue
+		}
+		wordList = strings.TrimSuffix(wordList, "\n")
+		ok, _ := regexp.Match("(([a-zA-Z]+)(, )?)+", []byte(wordList))
+		if !ok {
+			fmt.Println("Wrong wordlist format. Please try again")
+			continue
+		}
+		wordArr := strings.Split(wordList, ", ")
+		input.WordsToFind = wordArr
+		break
+	}
+	return input
+}
 
 func main() {
-	t1 := time.Now()
+	processENV()
+	inputFile := os.Getenv("INPUT_FILE")
 
-	jsonFile, err := os.Open("hf_test_calculation_fixtures.json")
+	usrInput := getSettings()
+	fmt.Println("Opening input file...")
+	jsonFile, err := os.Open(inputFile)
 	if err != nil {
 		log.Println(err)
 	}
 	defer jsonFile.Close()
 	byteValue, _ := io.ReadAll(jsonFile)
 
-	fmt.Println("Open+Read time: ", time.Since(t1).Seconds())
-	t2 := time.Now()
-
+	fmt.Println("Reading input file...")
 	var deliveries DeliveriesRaw
 	json.Unmarshal(byteValue, &deliveries)
 
-	fmt.Println("Unmarshal time: ", time.Since(t2).Seconds())
-	t3 := time.Now()
-
+	fmt.Println("Calculating data...")
 	uniqueRecipes := mapRecipesToQuantity(&deliveries)
-
-	fmt.Println("Mapping time: ", time.Since(t3).Seconds())
-
 	sortedListOfRecipes := makeSortedRecipesList(uniqueRecipes) // need to use for loop on map to get quantity
-
 	postcodesMap := mapPostcodesToQuantity(&deliveries)
-
-	counter, err := countDeliveriesToPostcodeBetweenTimes(fromENV, toENV, postcodeENV, deliveries)
+	counter, err := countDeliveriesToPostcodeBetweenTimes(usrInput.TimeFrom, usrInput.TimeTo, usrInput.Postcode, deliveries)
 	if err != nil {
 		log.Println(err)
 	}
-	matches := findMatches(*sortedListOfRecipes, wordsToFind)
-	writeToJSON(*uniqueRecipes, *sortedListOfRecipes, *postcodesMap, counter, matches)
+	matches := findMatches(*sortedListOfRecipes, usrInput.WordsToFind)
+	writeToJSON(*uniqueRecipes, *sortedListOfRecipes, *postcodesMap, counter, matches, usrInput)
+	fmt.Println("Done. You can find JSON file with processed data in output directory.")
 }
 
+// to count quantity of every unique recipe
 func mapRecipesToQuantity(deliveries *DeliveriesRaw) *map[string]int {
 	m := make(map[string]int)
 	for _, v := range *deliveries {
@@ -97,6 +164,7 @@ func mapRecipesToQuantity(deliveries *DeliveriesRaw) *map[string]int {
 	return &m
 }
 
+// to count quantity of every unique postcode
 func mapPostcodesToQuantity(deliveries *DeliveriesRaw) *map[string]int {
 	m := make(map[string]int)
 	for _, v := range *deliveries {
@@ -109,6 +177,7 @@ func mapPostcodesToQuantity(deliveries *DeliveriesRaw) *map[string]int {
 	return &m
 }
 
+// to sort it alphabetically
 func makeSortedRecipesList(uniqueRecipesMap *map[string]int) *[]string {
 	recipesList := make([]string, 0, len(*uniqueRecipesMap))
 	for k := range *uniqueRecipesMap {
@@ -130,7 +199,7 @@ func busiestPostcode(postcodeMap *map[string]int) (string, int) {
 	return postcode, counter
 }
 
-func writeToJSON(uniqueRecipesMap map[string]int, sortedListOfRecipes []string, postcodesMap map[string]int, deliveriesForPostcode int, matches []string) {
+func writeToJSON(uniqueRecipesMap map[string]int, sortedListOfRecipes []string, postcodesMap map[string]int, deliveriesForPostcode int, matches []string, usrInput UserInput) {
 	var out JSONoutput
 
 	out.UniqueRecipeCount = len(uniqueRecipesMap)
@@ -150,14 +219,37 @@ func writeToJSON(uniqueRecipesMap map[string]int, sortedListOfRecipes []string, 
 	out.BusiestPostcode.DeliveryCount = counter
 
 	out.CountPerPostcodeAndTime.DeliveryCount = deliveriesForPostcode
-	out.CountPerPostcodeAndTime.From = fromENV
-	out.CountPerPostcodeAndTime.To = toENV
-	out.CountPerPostcodeAndTime.Postcode = postcodeENV
+	out.CountPerPostcodeAndTime.From = usrInput.TimeFrom
+	out.CountPerPostcodeAndTime.To = usrInput.TimeTo
+	out.CountPerPostcodeAndTime.Postcode = usrInput.Postcode
 
 	out.MatchByName = matches
 
-	file, _ := json.MarshalIndent(out, "", "	")
-	_ = os.WriteFile("out.json", file, 0644)
+	err := writeToFile(out)
+	if err != nil {
+		log.Println(err)
+	}
+}
+
+func writeToFile(data JSONoutput) error {
+	file, err := json.MarshalIndent(data, "", "	")
+	if err != nil {
+		return err
+	}
+
+	outputFile := os.Getenv("OUTPUT_FILE")
+	outputDir := os.Getenv("OUTPUT_DIR")
+	_, err = os.ReadDir(outputDir)
+	if err != nil {
+		os.Mkdir(outputDir, 0644)
+	}
+	os.Chmod(outputDir, 0777)
+	path := path.Join(outputDir, outputFile)
+	err = os.WriteFile(path, file, 0777)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func countDeliveriesToPostcodeBetweenTimes(fromStr string, toStr string, postcode string, data DeliveriesRaw) (int, error) {
@@ -186,6 +278,7 @@ func countDeliveriesToPostcodeBetweenTimes(fromStr string, toStr string, postcod
 	return counter, nil
 }
 
+// to parse delivery times from file
 func deliveryTime(data string) (int, int, error) {
 	patternOpen := regexp.MustCompile("[a-z] (.?[0-9])AM")
 	patternClose := regexp.MustCompile("- (.?[0-9])PM")
